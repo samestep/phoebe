@@ -1,2 +1,3 @@
-# phoebe
+# Phoebe
+
 Automatic differentiation for Rust.
