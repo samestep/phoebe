@@ -1,0 +1,10 @@
+[package]
+name = "phoebe"
+version = "0.1.0"
+edition = "2021"
+description = "Automatic differentiation for Rust."
+license = "MIT"
+repository = "https://github.com/samestep/phoebe"
+
+[dependencies]
+phoebe-macro = { path = "../phoebe-macro" }
