@@ -143,7 +143,7 @@ fn from_singleton<T: Manifold>(dx: <(T,) as Manifold>::Cotangent) -> T::Cotangen
 /// [gradient]: https://en.wikipedia.org/wiki/Gradient
 pub fn grad<T: Manifold, F: Differentiable<Domain = (T,)>>(f: F) -> impl FnOnce(T) -> T::Cotangent
 where
-    T::Cotangent: VectorSpace + Clone,
+    T::Cotangent: VectorSpace,
     <F::Codomain as Manifold>::Cotangent: Scalar,
 {
     |x| {
