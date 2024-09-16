@@ -141,13 +141,13 @@ fn from_singleton<T: Manifold>(dx: <(T,) as Manifold>::Cotangent) -> T::Cotangen
 /// Take the [gradient][] of a scalar-valued function.
 ///
 /// [gradient]: https://en.wikipedia.org/wiki/Gradient
-pub fn grad<T: Manifold, F: Differentiable<Domain = (T,)>>(f: F) -> impl FnOnce(T) -> T::Cotangent
+pub fn grad<T: Manifold, F: Differentiable<Domain = (T,)>>(f: F) -> impl FnOnce(T) -> T
 where
-    T::Cotangent: VectorSpace,
+    T::Cotangent: VectorSpace + Into<T>,
     <F::Codomain as Manifold>::Cotangent: Scalar,
 {
     |x| {
         let (_, _, df) = f.vjp((x,), to_singleton(T::Cotangent::zero()));
-        from_singleton(df(<F::Codomain as Manifold>::Cotangent::one()))
+        from_singleton(df(<F::Codomain as Manifold>::Cotangent::one())).into()
     }
 }
