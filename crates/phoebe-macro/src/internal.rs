@@ -40,15 +40,18 @@ pub fn differentiable(function: ItemFn) -> syn::Result<TokenStream> {
                 fn apply(self, (#(#pats,)*): Self::Domain) -> Self::Codomain #block
             }
 
-            impl ::phoebe::Differentiable for Repr {
+            impl<'a> ::phoebe::Differentiable<'a> for Repr {
                 fn vjp(
                     self,
+                    ctx: &'a ::phoebe::Context,
                     x: Self::Domain,
-                    dx: <Self::Domain as ::phoebe::Manifold>::Cotangent,
+                    dx: <Self::Domain as ::phoebe::Manifold<'a>>::Cotangent,
                 ) -> (
                     Self::Codomain,
-                    <Self::Codomain as ::phoebe::Manifold>::Cotangent,
-                    impl FnOnce(<Self::Codomain as ::phoebe::Manifold>::Cotangent) -> <Self::Domain as ::phoebe::Manifold>::Cotangent,
+                    <Self::Codomain as ::phoebe::Manifold<'a>>::Cotangent,
+                    impl FnOnce(
+                        <Self::Codomain as ::phoebe::Manifold>::Cotangent,
+                    ) -> <Self::Domain as ::phoebe::Manifold<'a>>::Cotangent,
                 ) {
                     (9., 0., |_| (6.,)) // TODO: don't just hardcode
                 }

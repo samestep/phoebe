@@ -13,11 +13,11 @@
 //! You can make a function differentiable by adding the [`differentiable`] attribute to it. Because
 //! [`fn_traits`][] is unstable, Phoebe creates a module with the same name as a function, and puts
 //! a type called `Repr` in that module which represents the differentiable semantics of that
-//! function. If you have a differentiable function that returns a scalar, you can call [`grad`] on
-//! it to take its gradient:
+//! function. If you have a differentiable function that returns a scalar, you can call
+//! [`Context::grad`] on it to take its gradient:
 //!
 //! ```
-//! use phoebe::{differentiable, grad};
+//! use phoebe::{differentiable, Context};
 //!
 //! #[differentiable]
 //! fn square(x: f64) -> f64 {
@@ -26,7 +26,8 @@
 //!
 //! fn main() {
 //!     assert_eq!(square(3.), 9.);
-//!     assert_eq!(grad(square::Repr)(3.), 6.);
+//!     let ctx = Context::new();
+//!     assert_eq!(ctx.grad(square::Repr)(3.), 6.);
 //! }
 //! ```
 //!
@@ -47,25 +48,65 @@
 // problem by making `::phoebe` valid even inside of this crate
 extern crate self as phoebe;
 
+use bumpalo::Bump;
+
 /// Generate code for the derivative of a function.
 pub use phoebe_macro::differentiable;
+
+/// A context for memory allocation.
+pub struct Context {
+    bump: Bump,
+}
+
+impl Context {
+    /// Create and return a new context.
+    pub fn new() -> Self {
+        Self { bump: Bump::new() }
+    }
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// A [differentiable manifold][].
 ///
 /// [differentiable manifold]: https://en.wikipedia.org/wiki/Differentiable_manifold
-pub trait Manifold {
+pub trait Manifold<'a> {
     /// This manifold's [cotangent bundle].
     ///
     /// [cotangent bundle]: https://en.wikipedia.org/wiki/Cotangent_bundle
     type Cotangent;
+
+    /// Return the zero cotangent at a given point.
+    fn zero(&self, ctx: &'a Context) -> Self::Cotangent;
 }
 
-impl Manifold for f64 {
+impl Manifold<'_> for f64 {
     type Cotangent = Self;
+
+    fn zero(&self, _: &Context) -> Self::Cotangent {
+        0.
+    }
 }
 
-impl<T: Manifold> Manifold for (T,) {
+impl<'a, T: Manifold<'a>> Manifold<'a> for (T,) {
     type Cotangent = (T::Cotangent,);
+
+    fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
+        (self.0.zero(ctx),)
+    }
+}
+
+impl<'a, T: Manifold<'a>> Manifold<'a> for &'a [T] {
+    type Cotangent = &'a [T::Cotangent];
+
+    fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
+        ctx.bump
+            .alloc_slice_fill_iter(self.iter().map(|x| x.zero(ctx)))
+    }
 }
 
 /// A [function][].
@@ -86,32 +127,19 @@ pub trait Function {
     fn apply(self, x: Self::Domain) -> Self::Codomain;
 }
 
-pub trait Differentiable: Function<Domain: Manifold, Codomain: Manifold> {
+pub trait Differentiable<'a>: Function<Domain: Manifold<'a>, Codomain: Manifold<'a>> {
     fn vjp(
         self,
+        ctx: &'a Context,
         x: Self::Domain,
-        dx: <Self::Domain as Manifold>::Cotangent,
+        dx: <Self::Domain as Manifold<'a>>::Cotangent,
     ) -> (
         Self::Codomain,
-        <Self::Codomain as Manifold>::Cotangent,
-        impl FnOnce(<Self::Codomain as Manifold>::Cotangent) -> <Self::Domain as Manifold>::Cotangent,
+        <Self::Codomain as Manifold<'a>>::Cotangent,
+        impl FnOnce(
+            <Self::Codomain as Manifold>::Cotangent,
+        ) -> <Self::Domain as Manifold<'a>>::Cotangent,
     );
-}
-
-/// A [vector space][].
-///
-/// [vector space]: https://en.wikipedia.org/wiki/Vector_space
-pub trait VectorSpace {
-    /// The [zero vector][].
-    ///
-    /// [zero vector]: https://en.wikipedia.org/wiki/Zero_element
-    fn zero() -> Self;
-}
-
-impl VectorSpace for f64 {
-    fn zero() -> Self {
-        0.
-    }
 }
 
 /// A [scalar][].
@@ -130,24 +158,30 @@ impl Scalar for f64 {
     }
 }
 
-fn to_singleton<T: Manifold>(dx: T::Cotangent) -> <(T,) as Manifold>::Cotangent {
+fn to_singleton<'a, T: Manifold<'a>>(dx: T::Cotangent) -> <(T,) as Manifold<'a>>::Cotangent {
     (dx,)
 }
 
-fn from_singleton<T: Manifold>(dx: <(T,) as Manifold>::Cotangent) -> T::Cotangent {
+fn from_singleton<'a, T: Manifold<'a>>(dx: <(T,) as Manifold<'a>>::Cotangent) -> T::Cotangent {
     dx.0
 }
 
-/// Take the [gradient][] of a scalar-valued function.
-///
-/// [gradient]: https://en.wikipedia.org/wiki/Gradient
-pub fn grad<T: Manifold, F: Differentiable<Domain = (T,)>>(f: F) -> impl FnOnce(T) -> T
-where
-    T::Cotangent: VectorSpace + Into<T>,
-    <F::Codomain as Manifold>::Cotangent: Scalar,
-{
-    |x| {
-        let (_, _, df) = f.vjp((x,), to_singleton(T::Cotangent::zero()));
-        from_singleton(df(<F::Codomain as Manifold>::Cotangent::one())).into()
+impl Context {
+    /// Take the [gradient][] of a scalar-valued function.
+    ///
+    /// [gradient]: https://en.wikipedia.org/wiki/Gradient
+    pub fn grad<'a, T: Manifold<'a>, F: Differentiable<'a, Domain = (T,)> + 'a>(
+        &'a self,
+        f: F,
+    ) -> impl FnOnce(T) -> T + 'a
+    where
+        T::Cotangent: Into<T>,
+        <F::Codomain as Manifold<'a>>::Cotangent: Scalar,
+    {
+        move |x| {
+            let dx = x.zero(self);
+            let (_, _, df) = f.vjp(self, (x,), to_singleton(dx));
+            from_singleton(df(<F::Codomain as Manifold>::Cotangent::one())).into()
+        }
     }
 }
