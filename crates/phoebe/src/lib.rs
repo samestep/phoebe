@@ -137,7 +137,7 @@ pub trait Differentiable<'a>: Function<Domain: Manifold<'a>, Codomain: Manifold<
         Self::Codomain,
         <Self::Codomain as Manifold<'a>>::Cotangent,
         impl FnOnce(
-            <Self::Codomain as Manifold>::Cotangent,
+            <Self::Codomain as Manifold<'a>>::Cotangent,
         ) -> <Self::Domain as Manifold<'a>>::Cotangent,
     );
 }
