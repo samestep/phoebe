@@ -48,7 +48,9 @@
 // problem by making `::phoebe` valid even inside of this crate
 extern crate self as phoebe;
 
-use bumpalo::Bump;
+use std::{cell::Cell, marker::PhantomData};
+
+use bumpalo::{collections::vec::Vec, Bump};
 
 /// Generate code for the derivative of a function.
 pub use phoebe_macro::differentiable;
@@ -62,6 +64,21 @@ impl Context {
     /// Create and return a new context.
     pub fn new() -> Self {
         Self { bump: Bump::new() }
+    }
+
+    fn unzip3<A, B, C>(
+        &self,
+        it: impl ExactSizeIterator<Item = (A, B, C)>,
+    ) -> (Vec<A>, Vec<B>, Vec<C>) {
+        let mut a = Vec::with_capacity_in(it.len(), &self.bump);
+        let mut b = Vec::with_capacity_in(it.len(), &self.bump);
+        let mut c = Vec::with_capacity_in(it.len(), &self.bump);
+        for (x, y, z) in it {
+            a.push(x);
+            b.push(y);
+            c.push(z);
+        }
+        (a, b, c)
     }
 }
 
@@ -100,6 +117,14 @@ impl<'a, T: Manifold<'a>> Manifold<'a> for (T,) {
     }
 }
 
+impl<'a, A: Manifold<'a>, B: Manifold<'a>> Manifold<'a> for (A, B) {
+    type Cotangent = (A::Cotangent, B::Cotangent);
+
+    fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
+        (self.0.zero(ctx), self.1.zero(ctx))
+    }
+}
+
 impl<'a, T: Manifold<'a>> Manifold<'a> for &'a [T] {
     type Cotangent = &'a [T::Cotangent];
 
@@ -109,10 +134,28 @@ impl<'a, T: Manifold<'a>> Manifold<'a> for &'a [T] {
     }
 }
 
+impl<'a, T: Manifold<'a>> Manifold<'a> for &'a mut [T] {
+    type Cotangent = &'a mut [T::Cotangent];
+
+    fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
+        ctx.bump
+            .alloc_slice_fill_iter(self.iter().map(|x| x.zero(ctx)))
+    }
+}
+
+impl<'a, T: Manifold<'a>> Manifold<'a> for Vec<'a, T> {
+    type Cotangent = &'a [Cell<T::Cotangent>];
+
+    fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
+        ctx.bump
+            .alloc_slice_fill_iter(self.iter().map(|x| Cell::new(x.zero(ctx))))
+    }
+}
+
 /// A [function][].
 ///
 /// [function]: https://en.wikipedia.org/wiki/Function_(mathematics)
-pub trait Function {
+pub trait Function<'a> {
     /// This function's [domain][].
     ///
     /// [domain]: https://en.wikipedia.org/wiki/Domain_of_a_function
@@ -124,10 +167,10 @@ pub trait Function {
     type Codomain;
 
     /// Return the result of applying this function to a given element of the domain.
-    fn apply(self, x: Self::Domain) -> Self::Codomain;
+    fn apply(self, ctx: &'a Context, x: Self::Domain) -> Self::Codomain;
 }
 
-pub trait Differentiable<'a>: Function<Domain: Manifold<'a>, Codomain: Manifold<'a>> {
+pub trait Differentiable<'a>: Function<'a, Domain: Manifold<'a>, Codomain: Manifold<'a>> {
     fn vjp(
         self,
         ctx: &'a Context,
@@ -183,5 +226,60 @@ impl Context {
             let (_, _, df) = f.vjp(self, (x,), to_singleton(dx));
             from_singleton(df(<F::Codomain as Manifold>::Cotangent::one())).into()
         }
+    }
+}
+
+struct Map<'a, F>(PhantomData<&'a F>);
+
+impl<'a, F: Copy + Function<'a, Domain: Copy>> Function<'a> for Map<'a, F> {
+    type Domain = (F, Vec<'a, F::Domain>);
+
+    type Codomain = Vec<'a, F::Codomain>;
+
+    fn apply(self, ctx: &'a Context, (f, a): Self::Domain) -> Self::Codomain {
+        let mut b = Vec::with_capacity_in(a.len(), &ctx.bump);
+        for x in a {
+            b.push(f.apply(ctx, x));
+        }
+        b
+    }
+}
+
+impl<
+        'a,
+        F: Copy
+            + Differentiable<
+                'a,
+                Domain: Copy + Manifold<'a, Cotangent: Copy>,
+                Codomain: Manifold<'a, Cotangent: Copy>,
+            > + Manifold<'a>,
+    > Differentiable<'a> for Map<'a, F>
+{
+    fn vjp(
+        self,
+        ctx: &'a Context,
+        (f, x): (F, Vec<'a, F::Domain>),
+        (df, dx): (
+            F::Cotangent,
+            &'a [Cell<<F::Domain as Manifold<'a>>::Cotangent>],
+        ),
+    ) -> (
+        Vec<'a, F::Codomain>,
+        &'a [Cell<<F::Codomain as Manifold<'a>>::Cotangent>],
+        impl FnOnce(
+            &'a [Cell<<F::Codomain as Manifold<'a>>::Cotangent>],
+        ) -> (
+            F::Cotangent,
+            &'a [Cell<<F::Domain as Manifold<'a>>::Cotangent>],
+        ),
+    ) {
+        let (y, dy, tape) = ctx.unzip3(x.iter().zip(dx.iter()).map(|(&a, da)| {
+            let (b, db, t) = f.vjp(ctx, a, da.get());
+            (b, Cell::new(db), t)
+        }));
+        (y, dy.into_bump_slice(), move |dy| {
+            (dx.iter().zip(dy).zip(tape).rev()).for_each(|((da, db), bwd)| da.set(bwd(db.get())));
+            (df, dx)
+        })
     }
 }
