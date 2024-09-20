@@ -52,6 +52,8 @@ use std::{cell::Cell, marker::PhantomData};
 
 use bumpalo::{collections::vec::Vec, Bump};
 
+use paste::paste;
+
 /// Generate code for the derivative of a function.
 pub use phoebe_macro::differentiable;
 
@@ -109,21 +111,24 @@ impl Manifold<'_> for f64 {
     }
 }
 
-impl<'a, T: Manifold<'a>> Manifold<'a> for (T,) {
-    type Cotangent = (T::Cotangent,);
-
-    fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
-        (self.0.zero(ctx),)
+macro_rules! impl_manifold_tuple {
+    ($($T:tt),*) => {
+        paste!{
+            impl<'a, $($T),*> Manifold<'a> for ($($T,)*) where $($T: Manifold<'a>),*{
+                type Cotangent = ($($T::Cotangent,)+);
+                fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
+                        let ($([<$T:lower>],)*) = self;
+                        ($([<$T:lower>].zero(ctx),)*)
+                }
+            }
+        }
     }
 }
 
-impl<'a, A: Manifold<'a>, B: Manifold<'a>> Manifold<'a> for (A, B) {
-    type Cotangent = (A::Cotangent, B::Cotangent);
-
-    fn zero(&self, ctx: &'a Context) -> Self::Cotangent {
-        (self.0.zero(ctx), self.1.zero(ctx))
-    }
-}
+impl_manifold_tuple!(A);
+impl_manifold_tuple!(A, B);
+impl_manifold_tuple!(A, B, C);
+impl_manifold_tuple!(A, B, C, D);
 
 impl<'a, T: Manifold<'a>> Manifold<'a> for &'a [T] {
     type Cotangent = &'a [T::Cotangent];
