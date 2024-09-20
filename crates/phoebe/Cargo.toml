@@ -7,5 +7,6 @@ license = "MIT"
 repository = "https://github.com/samestep/phoebe"
 
 [dependencies]
-bumpalo = "3"
+bumpalo = { version = "3", features = ["collections"] }
+paste = "1.0.15"
 phoebe-macro = { path = "../phoebe-macro" }
